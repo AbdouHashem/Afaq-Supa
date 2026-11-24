@@ -212,7 +212,7 @@ export async function getEventMediaById(
   return rows[0];
 }
 
-export async function deleteEventCoverMedia(
+export async function deleteEventMediaByUrl(
   url: string | null | undefined
 ): Promise<void> {
   if (!url || typeof url !== 'string') return;
@@ -249,3 +249,5 @@ export async function deleteEventCoverMedia(
     console.warn('Non-fatal cleanup failure for media URL:', err);
   }
 }
+
+export const deleteEventCoverMedia = deleteEventMediaByUrl;
