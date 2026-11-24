@@ -1,9 +1,7 @@
 import crypto from 'crypto';
 import { eq } from 'drizzle-orm';
-import { getDownloadURL } from 'firebase-admin/storage';
 import { db } from './index.ts';
 import { eventMedia } from './schema.ts';
-import { adminStorage, firebaseStorageBucketName } from '../lib/firebase-admin.ts';
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -50,7 +48,7 @@ function detectImageMimeFromMagicBytes(
     return 'image/png';
   }
 
-  // WebP: RIFF....WEBP
+  // WebP: RIFF .... WEBP
   if (
     buf.subarray(0, 4).toString('ascii') === 'RIFF' &&
     buf.subarray(8, 12).toString('ascii') === 'WEBP'
@@ -65,7 +63,8 @@ let cachedBucketAvailable: { checkedAt: number; available: boolean } | null =
   null;
 
 async function isFirebaseBucketAvailable(): Promise<boolean> {
-  if (!firebaseStorageBucketName) return false;
+  const bucketName = process.env.FIREBASE_STORAGE_BUCKET;
+  if (!bucketName) return false;
   const now = Date.now();
   if (
     cachedBucketAvailable &&
@@ -75,9 +74,8 @@ async function isFirebaseBucketAvailable(): Promise<boolean> {
   }
 
   try {
-    const [exists] = await adminStorage
-      .bucket(firebaseStorageBucketName)
-      .exists();
+    const { adminStorage } = await import('../lib/firebase-admin.ts');
+    const [exists] = await adminStorage.bucket(bucketName).exists();
     cachedBucketAvailable = { checkedAt: now, available: exists };
     return exists;
   } catch {
@@ -134,7 +132,10 @@ export async function uploadEventCoverMedia(dataUrl: unknown): Promise<{
     try {
       const ext = MIME_TO_EXT[detectedMime] ?? 'webp';
       const objectPath = `events/covers/${crypto.randomUUID()}.${ext}`;
-      const bucket = adminStorage.bucket(firebaseStorageBucketName);
+      const bucketName = process.env.FIREBASE_STORAGE_BUCKET;
+      const { adminStorage } = await import('../lib/firebase-admin.ts');
+      const { getDownloadURL } = await import('firebase-admin/storage');
+      const bucket = adminStorage.bucket(bucketName);
       const file = bucket.file(objectPath);
 
       await file.save(buffer, {
@@ -170,52 +171,51 @@ export async function uploadEventCoverMedia(dataUrl: unknown): Promise<{
       })
       .returning({ id: eventMedia.id });
 
+    if (!inserted || inserted.length === 0) {
+      throw new Error('Failed to insert media row');
+    }
+
     return {
       url: `${LOCAL_MEDIA_PREFIX}${inserted[0].id}`,
       sizeBytes: buffer.length,
       mimeType: detectedMime,
       storage: 'database',
     };
-  } catch (error) {
-    console.error('Database error in uploadEventCoverMedia:', error);
-    throw new Error('تعذر حفظ الصورة حاليًا. يرجى المحاولة مرة أخرى.', {
-      cause: error,
-    });
+  } catch (err) {
+    console.error('Failed to store media in PostgreSQL event_media:', err);
+    throw new MediaUploadError(
+      'تعذر حفظ الصورة في قاعدة البيانات حاليًا. يرجى المحاولة لاحقًا.',
+      500
+    );
   }
 }
 
-export async function getEventMediaById(id: string): Promise<{
-  mimeType: string;
-  data: Buffer;
-  sizeBytes: number;
-} | null> {
-  if (!UUID_REGEX.test(id)) {
+export async function getEventMediaById(
+  id: string
+): Promise<{ mimeType: string; data: Buffer; sizeBytes: number } | null> {
+  const trimmed = id?.trim() ?? '';
+  if (!UUID_REGEX.test(trimmed)) {
     return null;
   }
 
-  try {
-    const rows = await db
-      .select({
-        mimeType: eventMedia.mimeType,
-        data: eventMedia.data,
-        sizeBytes: eventMedia.sizeBytes,
-      })
-      .from(eventMedia)
-      .where(eq(eventMedia.id, id))
-      .limit(1);
+  const rows = await db
+    .select({
+      mimeType: eventMedia.mimeType,
+      data: eventMedia.data,
+      sizeBytes: eventMedia.sizeBytes,
+    })
+    .from(eventMedia)
+    .where(eq(eventMedia.id, trimmed))
+    .limit(1);
 
-    if (rows.length === 0) return null;
-    return rows[0];
-  } catch (error) {
-    console.error('Database error in getEventMediaById:', error);
-    throw new Error('تعذر تحميل الصورة حاليًا.', { cause: error });
-  }
+  if (rows.length === 0) return null;
+  return rows[0];
 }
 
-export async function deleteEventMediaByUrl(
+export async function deleteEventCoverMedia(
   url: string | null | undefined
 ): Promise<void> {
-  if (!url) return;
+  if (!url || typeof url !== 'string') return;
 
   try {
     if (url.startsWith(LOCAL_MEDIA_PREFIX)) {
@@ -226,18 +226,20 @@ export async function deleteEventMediaByUrl(
       return;
     }
 
+    const bucketName = process.env.FIREBASE_STORAGE_BUCKET;
     if (
-      firebaseStorageBucketName &&
-      url.includes(`/${firebaseStorageBucketName}/o/`)
+      bucketName &&
+      url.includes(`/${bucketName}/o/`)
     ) {
       const encodedPath = url
-        .split(`/${firebaseStorageBucketName}/o/`)[1]
+        .split(`/${bucketName}/o/`)[1]
         ?.split('?')[0];
       if (encodedPath) {
         const objectPath = decodeURIComponent(encodedPath);
         if (objectPath.startsWith('events/covers/')) {
+          const { adminStorage } = await import('../lib/firebase-admin.ts');
           await adminStorage
-            .bucket(firebaseStorageBucketName)
+            .bucket(bucketName)
             .file(objectPath)
             .delete({ ignoreNotFound: true });
         }
