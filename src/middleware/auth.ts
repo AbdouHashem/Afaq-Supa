@@ -1,10 +1,10 @@
 import type { NextFunction, Request, Response } from 'express';
-import type { DecodedIdToken } from 'firebase-admin/auth';
+import { verifyFirebaseIdToken, type VerifiedFirebaseUser } from '../lib/verify-token.ts';
 import { getOrCreateUser } from '../db/users.ts';
 import { isUserAdmin } from '../db/roles.ts';
 
 export interface AuthRequest extends Request {
-  user?: DecodedIdToken;
+  user?: VerifiedFirebaseUser;
 }
 
 export const requireAuth = async (
@@ -18,40 +18,43 @@ export const requireAuth = async (
   }
 
   const token = authHeader.split('Bearer ')[1];
+
+  let user: VerifiedFirebaseUser;
   try {
-    const { adminAuth } = await import('../lib/firebase-admin.ts');
-    const decodedToken = await adminAuth.verifyIdToken(token);
-    req.user = decodedToken;
+    user = await verifyFirebaseIdToken(token);
+  } catch (error) {
+    console.error('Error verifying Firebase ID token:', error);
+    return res.status(401).json({ error: 'غير مصرّح: جلسة غير صالحة أو منتهية.' });
+  }
 
-    const email = decodedToken.email ?? `${decodedToken.uid}@users.afaq.local`;
-    const name = decodedToken.name ?? email.split('@')[0] ?? 'مستخدم آفاق';
-    await getOrCreateUser(decodedToken.uid, name, email);
+  try {
+    req.user = user;
 
-    // Auto-promote configured admin emails to admin role in database
+    const email = user.email ?? `${user.uid}@users.afaq.local`;
+    const name = user.name ?? email.split('@')[0] ?? 'مستخدم آفاق';
+    await getOrCreateUser(user.uid, name, email);
+
+    // Auto-promote configured admin emails (only if Firebase verified the email)
     const adminEmails = [
       'a.m.hashem20@gmail.com',
-      ...(process.env.ADMIN_EMAILS ? process.env.ADMIN_EMAILS.split(',').map((s) => s.trim().toLowerCase()) : [])
+      ...(process.env.ADMIN_EMAILS
+        ? process.env.ADMIN_EMAILS.split(',').map((s) => s.trim().toLowerCase())
+        : []),
     ];
 
-    if (email && adminEmails.includes(email.toLowerCase())) {
+    if (user.email && user.emailVerified && adminEmails.includes(user.email.toLowerCase())) {
       const { userRoles } = await import('../db/schema.ts');
       const { db } = await import('../db/index.ts');
       await db
         .insert(userRoles)
-        .values({
-          userId: decodedToken.uid,
-          role: 'admin',
-        })
-        .onConflictDoUpdate({
-          target: userRoles.userId,
-          set: { role: 'admin' },
-        });
+        .values({ userId: user.uid, role: 'admin' })
+        .onConflictDoUpdate({ target: userRoles.userId, set: { role: 'admin' } });
     }
 
     next();
   } catch (error) {
-    console.error('Error verifying Firebase ID token:', error);
-    return res.status(401).json({ error: 'غير مصرّح: جلسة غير صالحة أو منتهية.' });
+    console.error('Database error during auth:', error);
+    return res.status(500).json({ error: 'تعذر الاتصال بقاعدة البيانات حاليًا.' });
   }
 };
 
