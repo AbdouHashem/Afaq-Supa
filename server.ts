@@ -491,64 +491,66 @@ async function startServer() {
     return accept.includes('text/html') || accept === '*/*' || accept === '';
   };
 
-  if (process.env.NODE_ENV !== 'production') {
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
+  if (!process.env.VERCEL) {
+    if (process.env.NODE_ENV !== 'production') {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
 
-    app.get('*', async (req, res, next) => {
-      if (!isHtmlNavigationRequest(req)) {
-        return next();
-      }
-      try {
-        const indexPath = path.resolve(__dirname, 'index.html');
-        const rawTemplate = await fs.readFile(indexPath, 'utf-8');
-        const transformed = await vite.transformIndexHtml(
-          req.originalUrl,
-          rawTemplate
-        );
-        const baseUrl = resolveBaseUrl(req);
-        const seo = await resolveRouteSeoForRequest(req, baseUrl);
-        const html = injectSeoIntoHtml(transformed, seo);
-        res
-          .status(seo.statusCode)
-          .setHeader('Content-Type', 'text/html; charset=utf-8')
-          .send(html);
-      } catch (err) {
-        vite.ssrFixStacktrace(err as Error);
-        next(err);
-      }
-    });
-
-    app.use(vite.middlewares);
-  } else {
-    const distDir = path.resolve(__dirname, 'dist');
-    const distIndexPath = path.join(distDir, 'index.html');
-    let cachedDistHtml: string | null = null;
-
-    app.use(express.static(distDir, { index: false }));
-    app.get('*', async (req, res, next) => {
-      if (req.path.startsWith('/api')) {
-        return next();
-      }
-      try {
-        if (!cachedDistHtml) {
-          cachedDistHtml = await fs.readFile(distIndexPath, 'utf-8');
+      app.get('*', async (req, res, next) => {
+        if (!isHtmlNavigationRequest(req)) {
+          return next();
         }
-        const baseUrl = resolveBaseUrl(req);
-        const seo = await resolveRouteSeoForRequest(req, baseUrl);
-        const html = injectSeoIntoHtml(cachedDistHtml, seo);
-        res
-          .status(seo.statusCode)
-          .setHeader('Content-Type', 'text/html; charset=utf-8')
-          .send(html);
-      } catch (err) {
-        console.error('Failed to serve SSR SEO HTML:', err);
-        res.sendFile(distIndexPath);
-      }
-    });
+        try {
+          const indexPath = path.resolve(__dirname, 'index.html');
+          const rawTemplate = await fs.readFile(indexPath, 'utf-8');
+          const transformed = await vite.transformIndexHtml(
+            req.originalUrl,
+            rawTemplate
+          );
+          const baseUrl = resolveBaseUrl(req);
+          const seo = await resolveRouteSeoForRequest(req, baseUrl);
+          const html = injectSeoIntoHtml(transformed, seo);
+          res
+            .status(seo.statusCode)
+            .setHeader('Content-Type', 'text/html; charset=utf-8')
+            .send(html);
+        } catch (err) {
+          vite.ssrFixStacktrace(err as Error);
+          next(err);
+        }
+      });
+
+      app.use(vite.middlewares);
+    } else {
+      const distDir = path.resolve(__dirname, 'dist');
+      const distIndexPath = path.join(distDir, 'index.html');
+      let cachedDistHtml: string | null = null;
+
+      app.use(express.static(distDir, { index: false }));
+      app.get('*', async (req, res, next) => {
+        if (req.path.startsWith('/api')) {
+          return next();
+        }
+        try {
+          if (!cachedDistHtml) {
+            cachedDistHtml = await fs.readFile(distIndexPath, 'utf-8');
+          }
+          const baseUrl = resolveBaseUrl(req);
+          const seo = await resolveRouteSeoForRequest(req, baseUrl);
+          const html = injectSeoIntoHtml(cachedDistHtml, seo);
+          res
+            .status(seo.statusCode)
+            .setHeader('Content-Type', 'text/html; charset=utf-8')
+            .send(html);
+        } catch (err) {
+          console.error('Failed to serve SSR SEO HTML:', err);
+          res.sendFile(distIndexPath);
+        }
+      });
+    }
   }
 
   if (!process.env.VERCEL) {
