@@ -27,6 +27,27 @@ export const requireAuth = async (
     const name = decodedToken.name ?? email.split('@')[0] ?? 'مستخدم آفاق';
     await getOrCreateUser(decodedToken.uid, name, email);
 
+    // Auto-promote configured admin emails to admin role in database
+    const adminEmails = [
+      'a.m.hashem20@gmail.com',
+      ...(process.env.ADMIN_EMAILS ? process.env.ADMIN_EMAILS.split(',').map((s) => s.trim().toLowerCase()) : [])
+    ];
+
+    if (email && adminEmails.includes(email.toLowerCase())) {
+      const { userRoles } = await import('../db/schema.ts');
+      const { db } = await import('../db/index.ts');
+      await db
+        .insert(userRoles)
+        .values({
+          userId: decodedToken.uid,
+          role: 'admin',
+        })
+        .onConflictDoUpdate({
+          target: userRoles.userId,
+          set: { role: 'admin' },
+        });
+    }
+
     next();
   } catch (error) {
     console.error('Error verifying Firebase ID token:', error);
